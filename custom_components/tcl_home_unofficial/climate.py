@@ -3,7 +3,6 @@
 import logging
 from typing import Any
 
-# import asyncio>
 from homeassistant.components.climate import (
     ClimateEntity,
     ClimateEntityFeature,
@@ -14,6 +13,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .config_entry import New_NameConfigEntry
+from .const import EXTERNAL_TEMP_SENSOR
 from .coordinator import IotDeviceCoordinator
 from .device import Device
 from .device_enums import (
@@ -44,10 +44,8 @@ _LOGGER = logging.getLogger(__name__)
 def get_fan_speed_feature(device: Device) -> str:
     if DeviceFeatureEnum.SELECT_WIND_SPEED_7_GEAR in device.supported_features:
         return DeviceFeatureEnum.SELECT_WIND_SPEED_7_GEAR
-
     if DeviceFeatureEnum.SELECT_WINDOW_AS_WIND_SPEED in device.supported_features:
         return DeviceFeatureEnum.SELECT_WINDOW_AS_WIND_SPEED
-
     if DeviceFeatureEnum.SELECT_PORTABLE_WIND_4VALUE_SPEED in device.supported_features:
         return DeviceFeatureEnum.SELECT_PORTABLE_WIND_4VALUE_SPEED
     return DeviceFeatureEnum.SELECT_WIND_SPEED
@@ -100,7 +98,7 @@ async def async_setup_entry(
     config_entry: New_NameConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ):
-    """Set up the Binary Sensors."""
+    """Set up the Climate entities."""
     coordinator = config_entry.runtime_data.coordinator
 
     climates = []
@@ -125,9 +123,7 @@ async def async_setup_entry(
                         device
                     ),
                     fan_speed_select_feature=get_fan_speed_feature(device),
-                    current_fan_speed_fn=lambda device: get_current_fan_speed_fn(
-                        device
-                    ),
+                    current_fan_speed_fn=lambda device: get_current_fan_speed_fn(device),
                     current_mode_fn=lambda device: map_mode_to_hvac_mode(
                         get_current_mode_fn(device)
                     ),
@@ -149,6 +145,9 @@ async def async_setup_entry(
                     ],
                     current_target_temp_fn=lambda device: device.data.target_temperature,
                     current_temp_fn=lambda device: device.data.current_temperature,
+                    # Auto-detect eco/sleep support from what the device actually exposes
+                    has_eco_preset=DeviceFeatureEnum.SWITCH_ECO in device.supported_features,
+                    has_sleep_preset=DeviceFeatureEnum.SWITCH_SLEEP in device.supported_features,
                 )
             )
 
@@ -213,6 +212,8 @@ class ClimateHandler(TclEntityBase, ClimateEntity):
         options_vertical_air_direction=list[str],
         options_horizontal_air_direction=list[str],
         options_mode=list[str],
+        has_eco_preset: bool = False,
+        has_sleep_preset: bool = False,
     ) -> None:
         TclEntityBase.__init__(self, coordinator, type, name, device)
 
@@ -223,12 +224,8 @@ class ClimateHandler(TclEntityBase, ClimateEntity):
         self.current_vertical_air_direction_fn = current_vertical_air_direction_fn
         self.current_horizontal_air_direction_fn = current_horizontal_air_direction_fn
 
-        self.vertical_air_direction_select_feature = (
-            vertical_air_direction_select_feature
-        )
-        self.horizontal_air_direction_select_feature = (
-            horizontal_air_direction_select_feature
-        )
+        self.vertical_air_direction_select_feature = vertical_air_direction_select_feature
+        self.horizontal_air_direction_select_feature = horizontal_air_direction_select_feature
 
         self.iot_handler_power = DesiredStateHandlerForSwitch(
             hass=hass,
@@ -258,11 +255,44 @@ class ClimateHandler(TclEntityBase, ClimateEntity):
             deviceFeature=fan_speed_select_feature,
         )
 
+        # --- Eco / Sleep preset handlers ---
+        # These are only wired up if the device actually exposes those features.
+        self.has_eco_preset = has_eco_preset
+        self.has_sleep_preset = has_sleep_preset
+
+        if has_eco_preset:
+            self.iot_handler_eco = DesiredStateHandlerForSwitch(
+                hass=hass,
+                coordinator=coordinator,
+                device=device,
+                deviceFeature=DeviceFeatureEnum.SWITCH_ECO,
+            )
+
+        if has_sleep_preset:
+            self.iot_handler_sleep = DesiredStateHandlerForSwitch(
+                hass=hass,
+                coordinator=coordinator,
+                device=device,
+                deviceFeature=DeviceFeatureEnum.SWITCH_SLEEP,
+            )
+
         self._attr_supported_features = ClimateEntityFeature(0)
         self._attr_supported_features |= ClimateEntityFeature.TARGET_TEMPERATURE
         self._attr_supported_features |= ClimateEntityFeature.FAN_MODE
         self._attr_supported_features |= ClimateEntityFeature.TURN_OFF
         self._attr_supported_features |= ClimateEntityFeature.TURN_ON
+
+        # Expose PRESET_MODE on the climate card if this device has eco or sleep
+        if has_eco_preset or has_sleep_preset:
+            self._attr_supported_features |= ClimateEntityFeature.PRESET_MODE
+            preset_list = ["none"]
+            if has_eco_preset:
+                preset_list.append("eco")
+            if has_sleep_preset:
+                preset_list.append("sleep")
+            self._preset_modes = preset_list
+        else:
+            self._preset_modes = None
 
         if self.vertical_air_direction_select_feature is not None:
             self._attr_supported_features |= ClimateEntityFeature.SWING_MODE
@@ -285,7 +315,6 @@ class ClimateHandler(TclEntityBase, ClimateEntity):
                 device=device,
                 deviceFeature=horizontal_air_direction_select_feature,
             )
-
             self._current_swing_horizontal_mode = (
                 self.current_horizontal_air_direction_fn(device)
             )
@@ -294,7 +323,6 @@ class ClimateHandler(TclEntityBase, ClimateEntity):
         self._target_humidity = None
         self._unit_of_measurement = UnitOfTemperature.CELSIUS
         self._preset = None
-        self._preset_modes = None
         self._current_humidity = None
 
         self._current_fan_mode = self.current_fan_speed_fn(device)
@@ -323,10 +351,28 @@ class ClimateHandler(TclEntityBase, ClimateEntity):
             self.iot_handler_vertical_air_direction.refreshDevice(self.device)
         if self.horizontal_air_direction_select_feature is not None:
             self.iot_handler_horizontal_air_direction.refreshDevice(self.device)
+        if self.has_eco_preset:
+            self.iot_handler_eco.refreshDevice(self.device)
+        if self.has_sleep_preset:
+            self.iot_handler_sleep.refreshDevice(self.device)
 
     @property
     def current_temperature(self) -> float:
         self.refresh_device()
+        # If an external sensor is configured, prefer it over the AC's internal sensor.
+        # Falls back to the device sensor if the external one is unavailable or unknown.
+        if EXTERNAL_TEMP_SENSOR:
+            state = self.hass.states.get(EXTERNAL_TEMP_SENSOR)
+            if state and state.state not in ("unknown", "unavailable"):
+                try:
+                    return float(state.state)
+                except (ValueError, TypeError):
+                    _LOGGER.warning(
+                        "EXTERNAL_TEMP_SENSOR %s returned non-numeric state '%s', "
+                        "falling back to device sensor",
+                        EXTERNAL_TEMP_SENSOR,
+                        state.state,
+                    )
         return float(self.current_temp_fn(self.device))
 
     @property
@@ -353,6 +399,23 @@ class ClimateHandler(TclEntityBase, ClimateEntity):
         return self._fan_modes
 
     @property
+    def preset_mode(self) -> str | None:
+        """Return current preset: eco, sleep, or none."""
+        if not self.has_eco_preset and not self.has_sleep_preset:
+            return None
+        self.refresh_device()
+        # Sleep takes priority if somehow both are active
+        if self.has_sleep_preset and getattr(self.device.data, "sleep", 0) == 1:
+            return "sleep"
+        if self.has_eco_preset and getattr(self.device.data, "eco", 0) == 1:
+            return "eco"
+        return "none"
+
+    @property
+    def preset_modes(self) -> list[str] | None:
+        return self._preset_modes
+
+    @property
     def swing_mode(self) -> str | None:
         self.refresh_device()
         return self.current_vertical_air_direction_fn(self.device)
@@ -372,7 +435,6 @@ class ClimateHandler(TclEntityBase, ClimateEntity):
 
     async def async_set_temperature(self, **kwargs: Any) -> None:
         self.refresh_device()
-
         value = kwargs.get(ATTR_TEMPERATURE)
         await self.iot_handler_temp.call_set_number(value)
         await self.iot_handler_temp.store_target_temp(value)
@@ -412,3 +474,24 @@ class ClimateHandler(TclEntityBase, ClimateEntity):
     async def async_turn_off(self) -> None:
         await self.iot_handler_power.call_switch(0)
         await self.coordinator.async_refresh()
+
+    async def async_set_preset_mode(self, preset_mode: str) -> None:
+        """Set eco or sleep preset. Activating one automatically deactivates the other."""
+        if preset_mode == "eco":
+            if self.has_eco_preset:
+                await self.iot_handler_eco.call_switch(1)
+            if self.has_sleep_preset:
+                await self.iot_handler_sleep.call_switch(0)
+        elif preset_mode == "sleep":
+            if self.has_sleep_preset:
+                await self.iot_handler_sleep.call_switch(1)
+            if self.has_eco_preset:
+                await self.iot_handler_eco.call_switch(0)
+        else:
+            # "none" ΓÇö turn both off
+            if self.has_eco_preset:
+                await self.iot_handler_eco.call_switch(0)
+            if self.has_sleep_preset:
+                await self.iot_handler_sleep.call_switch(0)
+        await self.coordinator.async_refresh()
+        self.async_write_ha_state()

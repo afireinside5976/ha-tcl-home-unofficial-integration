@@ -26,5 +26,16 @@ DEFAULT_APP_ID = "wx6e1af3fa84fbe523"
 DEFAULT_USER = ""
 DEFAULT_PW = ""
 
-DEFAULT_SCAN_INTERVAL = 60
+# How often (in seconds) to poll the TCL cloud for device state.
+# Applies to power, mode, temperature, fan speed, eco, sleep.
+# Note: energy/power consumption sensors always refresh hourly regardless.
+# Default upstream was 60s. 30s gives snappier state updates without hammering the API.
+DEFAULT_SCAN_INTERVAL = 30
 MIN_SCAN_INTERVAL = 10
+
+# External temperature sensor override.
+# When set, the climate entity will show this HA sensor's reading as the current
+# temperature instead of the AC's built-in internal sensor.
+# The device sensor is used as a fallback if this sensor is unavailable or unknown.
+# Set to "" to use the AC's own sensor (upstream default behaviour).
+EXTERNAL_TEMP_SENSOR = "sensor.family_room_average_temperature"
