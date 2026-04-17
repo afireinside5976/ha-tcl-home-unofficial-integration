@@ -118,9 +118,9 @@ def getSleepMode(sleep: int | float) -> SleepModeEnum:
 class WindSeed7GearEnum(StrEnum):
     TURBO = "Turbo"
     AUTO = "Auto"
-    SPEED_1 = "1"
-    SPEED_2 = "2"
-    SPEED_3 = "3"
+    SPEED_1 = "Low"
+    SPEED_2 = "Medium"
+    SPEED_3 = "High"
     SPEED_4 = "4"
     SPEED_5 = "5"
     SPEED_6 = "6"
@@ -239,9 +239,9 @@ def getPortableWind4ValueSeed(
 
 
 class WindowAcWindSeedEnum(StrEnum):
-    SPEED_1 = "1"
-    SPEED_2 = "2"
-    SPEED_3 = "3"
+    SPEED_1 = "Low"
+    SPEED_2 = "Medium"
+    SPEED_3 = "High"
     AUTO = "Auto"
 
 
