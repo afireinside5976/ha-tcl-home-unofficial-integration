@@ -13,7 +13,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .config_entry import New_NameConfigEntry
-from .const import EXTERNAL_TEMP_SENSOR
+from .const import EXTERNAL_TEMP_SENSOR, EXTERNAL_TEMP_SENSOR_UNIT
 from .coordinator import IotDeviceCoordinator
 from .device import Device
 from .device_enums import (
@@ -145,7 +145,6 @@ async def async_setup_entry(
                     ],
                     current_target_temp_fn=lambda device: device.data.target_temperature,
                     current_temp_fn=lambda device: device.data.current_temperature,
-                    # Auto-detect eco/sleep support from what the device actually exposes
                     has_eco_preset=DeviceFeatureEnum.SWITCH_ECO in device.supported_features,
                     has_sleep_preset=DeviceFeatureEnum.SWITCH_SLEEP in device.supported_features,
                 )
@@ -233,21 +232,18 @@ class ClimateHandler(TclEntityBase, ClimateEntity):
             device=device,
             deviceFeature=power_switch_feature,
         )
-
         self.iot_handler_mode = DesiredStateHandlerForSelect(
             hass=hass,
             coordinator=coordinator,
             device=device,
             deviceFeature=mode_select_feature,
         )
-
         self.iot_handler_temp = DesiredStateHandlerForNumber(
             hass=hass,
             coordinator=coordinator,
             device=device,
             deviceFeature=temperature_set_feature,
         )
-
         self.iot_handler_wind_speed = DesiredStateHandlerForSelect(
             hass=hass,
             coordinator=coordinator,
@@ -256,7 +252,6 @@ class ClimateHandler(TclEntityBase, ClimateEntity):
         )
 
         # --- Eco / Sleep preset handlers ---
-        # These are only wired up if the device actually exposes those features.
         self.has_eco_preset = has_eco_preset
         self.has_sleep_preset = has_sleep_preset
 
@@ -267,7 +262,6 @@ class ClimateHandler(TclEntityBase, ClimateEntity):
                 device=device,
                 deviceFeature=DeviceFeatureEnum.SWITCH_ECO,
             )
-
         if has_sleep_preset:
             self.iot_handler_sleep = DesiredStateHandlerForSwitch(
                 hass=hass,
@@ -282,7 +276,6 @@ class ClimateHandler(TclEntityBase, ClimateEntity):
         self._attr_supported_features |= ClimateEntityFeature.TURN_OFF
         self._attr_supported_features |= ClimateEntityFeature.TURN_ON
 
-        # Expose PRESET_MODE on the climate card if this device has eco or sleep
         if has_eco_preset or has_sleep_preset:
             self._attr_supported_features |= ClimateEntityFeature.PRESET_MODE
             preset_list = ["none"]
@@ -296,7 +289,6 @@ class ClimateHandler(TclEntityBase, ClimateEntity):
 
         if self.vertical_air_direction_select_feature is not None:
             self._attr_supported_features |= ClimateEntityFeature.SWING_MODE
-
             self.iot_handler_vertical_air_direction = DesiredStateHandlerForSelect(
                 hass=hass,
                 coordinator=coordinator,
@@ -308,7 +300,6 @@ class ClimateHandler(TclEntityBase, ClimateEntity):
 
         if self.horizontal_air_direction_select_feature is not None:
             self._attr_supported_features |= ClimateEntityFeature.SWING_HORIZONTAL_MODE
-
             self.iot_handler_horizontal_air_direction = DesiredStateHandlerForSelect(
                 hass=hass,
                 coordinator=coordinator,
@@ -359,13 +350,18 @@ class ClimateHandler(TclEntityBase, ClimateEntity):
     @property
     def current_temperature(self) -> float:
         self.refresh_device()
-        # If an external sensor is configured, prefer it over the AC's internal sensor.
-        # Falls back to the device sensor if the external one is unavailable or unknown.
+        # Use external sensor if configured, converting to Celsius since the
+        # entity declares temperature_unit=CELSIUS and HA auto-converts for display.
+        # EXTERNAL_TEMP_SENSOR_UNIT controls whether the sensor reads in F or C.
         if EXTERNAL_TEMP_SENSOR:
             state = self.hass.states.get(EXTERNAL_TEMP_SENSOR)
             if state and state.state not in ("unknown", "unavailable"):
                 try:
-                    return float(state.state)
+                    raw = float(state.state)
+                    if EXTERNAL_TEMP_SENSOR_UNIT == "F":
+                        # Convert Fahrenheit to Celsius for HA internal storage
+                        return round((raw - 32) * 5 / 9, 2)
+                    return round(raw, 2)
                 except (ValueError, TypeError):
                     _LOGGER.warning(
                         "EXTERNAL_TEMP_SENSOR %s returned non-numeric state '%s', "
@@ -404,7 +400,6 @@ class ClimateHandler(TclEntityBase, ClimateEntity):
         if not self.has_eco_preset and not self.has_sleep_preset:
             return None
         self.refresh_device()
-        # Sleep takes priority if somehow both are active
         if self.has_sleep_preset and getattr(self.device.data, "sleep", 0) == 1:
             return "sleep"
         if self.has_eco_preset and getattr(self.device.data, "eco", 0) == 1:
@@ -476,7 +471,7 @@ class ClimateHandler(TclEntityBase, ClimateEntity):
         await self.coordinator.async_refresh()
 
     async def async_set_preset_mode(self, preset_mode: str) -> None:
-        """Set eco or sleep preset. Activating one automatically deactivates the other."""
+        """Set eco or sleep preset. Activating one deactivates the other."""
         if preset_mode == "eco":
             if self.has_eco_preset:
                 await self.iot_handler_eco.call_switch(1)
@@ -488,7 +483,6 @@ class ClimateHandler(TclEntityBase, ClimateEntity):
             if self.has_eco_preset:
                 await self.iot_handler_eco.call_switch(0)
         else:
-            # "none" ΓÇö turn both off
             if self.has_eco_preset:
                 await self.iot_handler_eco.call_switch(0)
             if self.has_sleep_preset:

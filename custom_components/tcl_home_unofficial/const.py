@@ -34,8 +34,13 @@ DEFAULT_SCAN_INTERVAL = 30
 MIN_SCAN_INTERVAL = 10
 
 # External temperature sensor override.
-# When set, the climate entity will show this HA sensor's reading as the current
-# temperature instead of the AC's built-in internal sensor.
-# The device sensor is used as a fallback if this sensor is unavailable or unknown.
-# Set to "" to use the AC's own sensor (upstream default behaviour).
+# Set to an HA sensor entity_id to show a room sensor's reading as current_temperature
+# instead of the AC's built-in internal sensor.
+# Leave as "" to use the AC's own sensor (upstream default).
 EXTERNAL_TEMP_SENSOR = "sensor.family_room_average_temperature"
+
+# Unit of the external sensor above: "F" for Fahrenheit, "C" for Celsius.
+# The TCL climate entity internally uses Celsius, so if your sensor reports
+# in Fahrenheit (most US Zigbee/ESPHome sensors) set this to "F" and the
+# value will be automatically converted before being stored.
+EXTERNAL_TEMP_SENSOR_UNIT = "F"
